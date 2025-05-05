@@ -171,6 +171,43 @@ void A_input(struct pkt packet)
 /* called when A's timer goes off */
 void A_timerinterrupt(void)
 {
+  if (TRACE > 0)
+    printf("----A: Timer tick, checking for expired packets...\n");
+
+  
+  bool any_unacked = false;
+
+  for (int i = 0; i < WINDOWSIZE; i++) {
+    // calculate index
+    int index = (A_base + i) % SEQSPACE;
+
+    // only process packets that are not acknowledged and have an active timer
+    if (!A_ackeds[index] && A_expiries[index] > 0) {
+      A_expiries[index] -= 1.0;  // tick down
+
+      // if timer expired, retransmit
+      if (A_expiries[index] <= 0) {
+        if (TRACE > 0)
+            printf("----A: Timeout for packet %d, retransmitting\n", index);
+
+        tolayer3(A, A_buffer[index]);   // retransmit the packet
+        packets_resent++;               // update global counter for retransmitted packets
+        A_expiries[index] = RTT;    // restart timer
+      }
+
+      any_unacked = true;
+    }
+  }
+
+  // after checking all the packets, if any are unacknowledged, keep the timer running, else stop it
+  if (any_unacked) {
+    starttimer(A, 1.0);
+    A_timer_is_active = true;
+  } else {
+    stoptimer(A);
+    A_timer_is_active = false;
+  }
+
 }
 
 void A_init(void)
