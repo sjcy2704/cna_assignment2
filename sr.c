@@ -66,7 +66,7 @@ void A_output(struct msg message)
   }
 
   if (TRACE > 1) {
-    printf("----A: New message arrives, send window is not full, send new message to layer 3\n");
+    printf("----A: New message arrives, send window is not full, send new messag to layer 3!\n");
   }
 
   /* construct packet to send */
