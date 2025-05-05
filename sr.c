@@ -4,7 +4,7 @@
 #include "emulator.h"
 #include "sr.h"
 
-/* Copied from gbn.c */
+/* Selective Repeat Implementation based on gbn.c */
 
 #define RTT  16.0       /* round trip time.  MUST BE SET TO 16.0 when submitting assignment */
 #define WINDOWSIZE 6    /* the maximum number of buffered unacked packet
@@ -54,6 +54,13 @@ void A_output(struct msg message)
   /* calculate current window size: how many unACKed packets are in-flight.
   use modulo to handle sequence number wrap-around correctly. */
   int window_size = (A_nextseqnum + SEQSPACE - A_base) % SEQSPACE;
+
+  /* debug print to check if variables get updated properly */
+  if (TRACE == 1) {
+    printf("A_output: window_size = %d, A_base = %d, A_nextseq = %d\n",
+      window_size, A_base, A_nextseqnum);
+  }
+
   if (window_size >= WINDOWSIZE) {
     /* If the window is full, drop the message (i.e., don't send it). */
     if (TRACE > 0) {
@@ -66,7 +73,7 @@ void A_output(struct msg message)
   }
 
   if (TRACE > 1) {
-    printf("----A: New message arrives, send window is not full, send new messag to layer 3!\n");
+    printf("----A: New message arrives, send window is not full, send new message to layer 3!\n");
   }
 
   /* construct packet to send */
@@ -124,6 +131,12 @@ void A_input(struct pkt packet)
   }
 
   acknum = packet.acknum;
+
+  if (acknum < 0 || acknum >= SEQSPACE) {
+    if (TRACE == 0)
+      printf("----A: ACK %d is out of range, do nothing!\n", acknum);
+    return;
+  }
 
   if (TRACE > 0) {
     printf("----A: uncorrupted ACK %d is received\n", acknum);
@@ -245,62 +258,52 @@ void A_init(void)
 
 /********* Receiver (B)  variables and procedures ************/
 
-static int expectedseqnum; /* the sequence number expected next by the receiver */
-static int B_nextseqnum;   /* the sequence number for the next packets sent by B */
+static struct pkt B_buffer[SEQSPACE];
+static bool B_received[SEQSPACE];
+static int B_expected_base = 0;
+static int B_nextseqnum = 0;
 
-
-/* called from layer 3, when a packet arrives for layer 4 at B*/
 void B_input(struct pkt packet)
 {
   struct pkt sendpkt;
   int i;
+  int seq = packet.seqnum;
 
-  /* if not corrupted and received packet is in order */
-  if  ( (!IsCorrupted(packet))  && (packet.seqnum == expectedseqnum) ) {
-    if (TRACE > 0)
-      printf("----B: packet %d is correctly received, send ACK!\n",packet.seqnum);
-    packets_received++;
+  /* if packet is corrupted we just ignore it and do nothing else */
+  if (!IsCorrupted(packet)) {
+    if (TRACE > 0) printf("----B: packet %d is correctly received, send ACK!\n", seq);
 
-    /* deliver to receiving application */
-    tolayer5(B, packet.payload);
+    /* save the packet in the buffer even if it hasn't been recieved even if its out of order since SR allows that */
+    if (!B_received[seq]) {
+      B_buffer[seq] = packet;
+      B_received[seq] = true;
+    }
 
-    /* send an ACK for the received packet */
-    sendpkt.acknum = expectedseqnum;
-
-    /* update state variables */
-    expectedseqnum = (expectedseqnum + 1) % SEQSPACE;
-  }
-  else {
-    /* packet is corrupted or out of order resend last ACK */
-    if (TRACE > 0)
-      printf("----B: packet corrupted or not expected sequence number, resend ACK!\n");
-    if (expectedseqnum == 0)
-      sendpkt.acknum = SEQSPACE - 1;
-    else
-      sendpkt.acknum = expectedseqnum - 1;
+    /* attempt to deliver packets to layer 5 in order */
+    /* while having the expected packet, it gets delivered and move the base forward */
+    while (B_received[B_expected_base]) {
+      tolayer5(B, B_buffer[B_expected_base].payload); /* deliver the packet to layer 5 in order */
+      packets_received++; /* update global counter for received packets */
+      B_received[B_expected_base] = false; /* reset the received flag */
+      B_expected_base = (B_expected_base + 1) % SEQSPACE; /* move the base forward */
+    }
   }
 
-  /* create packet */
-  sendpkt.seqnum = B_nextseqnum;
-  B_nextseqnum = (B_nextseqnum + 1) % 2;
-
-  /* we don't have any data to send.  fill payload with 0's */
-  for ( i=0; i<20 ; i++ )
-    sendpkt.payload[i] = '0';
-
-  /* computer checksum */
+  /* although there's nothing performed on corrupted packets, we still send an ACK as SR requires it */
+  sendpkt.seqnum = B_nextseqnum++; /* ACK packets have unique seq number*/
+  sendpkt.acknum = seq; /* ACK the sequence number of the packet even if its corrupted */
+  for (i = 0; i < 20; i++) sendpkt.payload[i] = 0; /* payload is not used so just set to zeros */
   sendpkt.checksum = ComputeChecksum(sendpkt);
-
-  /* send out packet */
-  tolayer3 (B, sendpkt);
+  tolayer3(B, sendpkt);
 }
 
-/* the following routine will be called once (only) before any other */
-/* entity B routines are called. You can use it to do any initialization */
 void B_init(void)
 {
-  expectedseqnum = 0;
+  int i;
+  B_expected_base = 0;
   B_nextseqnum = 1;
+  for (i = 0; i < SEQSPACE; i++)
+    B_received[i] = false;
 }
 
 /******************************************************************************
