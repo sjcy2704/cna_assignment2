@@ -171,6 +171,7 @@ void A_timerinterrupt(void)
 {
   if (TRACE > 0) {
     printf("----A: time out,resend packets!\n");
+    printf("---A: resending packet %d\n", A_buffer[A_base].seqnum);
   }
 
   tolayer3(A, A_buffer[A_base]); /* resend the packet */
