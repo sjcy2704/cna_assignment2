@@ -54,17 +54,19 @@ void A_output(struct msg message)
   /* calculate current window size: how many unACKed packets are in-flight.
   use modulo to handle sequence number wrap-around correctly. */
   int window_size = (A_nextseqnum + SEQSPACE - A_base) % SEQSPACE;
-  printf("A_output: window_size = %d, A_base = %d, A_nextseq = %d\n",
-    window_size, A_base, A_nextseqnum);
   if (window_size >= WINDOWSIZE) {
     /* If the window is full, drop the message (i.e., don't send it). */
     if (TRACE > 0) {
-      printf("----A: window is full, message dropped\n");
+      printf("----A: New message arrives, send window is full\n");
     }
 
     /* update global counter for dropped messages because of full window */
     window_full++;
     return;
+  }
+
+  if (TRACE > 1) {
+    printf("----A: New message arrives, send window is not full, send new message to layer 3\n");
   }
 
   /* construct packet to send */
@@ -86,7 +88,7 @@ void A_output(struct msg message)
 
   /* send packet to simulator */
   if (TRACE > 0) {
-    printf("----A: sending packet %d to layer 3\n", p.seqnum);
+    printf("Sending packet %d to layer 3\n", p.seqnum);
   }
   tolayer3(A, p);
 
@@ -117,12 +119,17 @@ void A_input(struct pkt packet)
   /* check if packet is corrupted */
   if (IsCorrupted(packet)) {
     if (TRACE > 0)
-      printf("----A: Corrupted ACK %d received, ignored\n", packet.acknum);
+      printf("----A: corrupted ACK received, do nothing!\n");
     return;
   }
 
-  total_ACKs_received++;
   acknum = packet.acknum;
+
+  if (TRACE > 0) {
+    printf("----A: uncorrupted ACK %d is received\n", acknum);
+  }
+
+  total_ACKs_received++;
 
   /* we need to only handle the ACKs for packets that are currently in the sender's window 
   if packet is already acknowledge, then is a duplicate ACK */
@@ -131,12 +138,14 @@ void A_input(struct pkt packet)
     A_expiries[acknum] = -1.0; /* Stop simulated timer for this packet */
     new_ACKs++;
 
-    if (TRACE > 0)
-      printf("----A: ACK %d received and marked as acknowledged\n", acknum);
+    if (TRACE > 0) {
+      printf("----A: ACK %d is not a duplicate\n", acknum);
+    }
   } else {
-    if (TRACE > 0)
-      printf("----A: Duplicate ACK %d received, ignored\n", acknum);
-      return;
+    if (TRACE > 0) {
+      printf("----A: duplicate ACK received, do nothing!\n");
+    }
+    return;
   }
 
   /* in selective repeat, the sender window base moves forward only if the base packet (A_base) has been acknowledged
@@ -175,12 +184,13 @@ void A_input(struct pkt packet)
 /* called when A's timer goes off */
 void A_timerinterrupt(void)
 {
-  if (TRACE > 0)
-    printf("----A: Timer tick, checking for expired packets...\n");
-
   int i; 
-  bool any_unacked = false;
+  bool any_unacked;
 
+  if (TRACE > 0)
+    printf("----A: time out,resend packets!\n");
+
+  any_unacked = false;
   for (i = 0; i < WINDOWSIZE; i++) {
     /* calculate index */
     int index = (A_base + i) % SEQSPACE;
@@ -192,7 +202,7 @@ void A_timerinterrupt(void)
       /* if timer expired, retransmit */
       if (A_expiries[index] <= 0) {
         if (TRACE > 0)
-          printf("----A: Timeout for packet %d, retransmitting\n", index);
+          printf("----A: resending packet %d\n", index);
 
         tolayer3(A, A_buffer[index]);   /* retransmit the packet */
         packets_resent++;               /* update global counter for retransmitted packets */
@@ -230,12 +240,7 @@ void A_init(void)
     A_ackeds[i] = false; /* initialize acked state for all packets (no packets have been acked) */
     A_expiries[i] = -1; /* initialize expiry times for all packets (-1 indicating is inactive) */
   }
-
-  if (TRACE > 0) {
-    printf("----A: initialized\n");
-  }
 }
-
 
 
 /********* Receiver (B)  variables and procedures ************/
