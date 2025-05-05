@@ -118,7 +118,7 @@ void A_input(struct pkt packet)
   /* check if packet is corrupted */
   if (IsCorrupted(packet)) {
     if (TRACE > 0)
-      printf("----A: corrupted ACK received, do nothing!\n");
+      printf("----A: corrupted ACK is received, do nothing!\n");
     return;
   }
 
