@@ -49,59 +49,60 @@ static int A_base = 0;                 /* the base of the window */
 /* called from layer 5 (application layer), passed the message to be sent to other side */
 void A_output(struct msg message)
 {
-  // calculate current window size: how many unACKed packets are in-flight.
-  // use modulo to handle sequence number wrap-around correctly.
+  struct pkt p;
+  int i;
+  /* calculate current window size: how many unACKed packets are in-flight.
+  use modulo to handle sequence number wrap-around correctly. */
   int window_size = (A_nextseqnum + SEQSPACE - A_base) % SEQSPACE;
   printf("A_output: window_size = %d, A_base = %d, A_nextseq = %d\n",
     window_size, A_base, A_nextseqnum);
   if (window_size >= WINDOWSIZE) {
-    // If the window is full, drop the message (i.e., don't send it).
+    /* If the window is full, drop the message (i.e., don't send it). */
     if (TRACE > 0) {
       printf("----A: window is full, message dropped\n");
     }
 
-    // update global counter for dropped messages because of full window
+    /* update global counter for dropped messages because of full window */
     window_full++;
     return;
   }
 
-  // construct packet to send 
-  struct pkt p;
-    p.seqnum = A_nextseqnum; // assign sequence number
-    p.acknum = NOTINUSE; // this is a packet, not an ACK
+  /* construct packet to send */
+  p.seqnum = A_nextseqnum; /* assign sequence number */
+  p.acknum = NOTINUSE; /* this is a packet, not an ACK */
 
-    // copy 20 byte payload from the message into the packet
-    for (int i = 0; i < 20; i++)
-        p.payload[i] = message.data[i]; // assign to payload
-      
-    p.checksum = ComputeChecksum(p); // compute checksum to detect corruption later
+  /* copy 20 byte payload from the message into the packet */
+  for (i = 0; i < 20; i++)
+    p.payload[i] = message.data[i]; /* assign to payload */
+    
+  p.checksum = ComputeChecksum(p); /* compute checksum to detect corruption later */
 
-    // save the packet in the sender's buffer so it can be retransmitted if needed
-    A_buffer[A_nextseqnum] = p;
+  /* save the packet in the sender's buffer so it can be retransmitted if needed */
+  A_buffer[A_nextseqnum] = p;
 
-    // packet not acknowledged yet
-    A_ackeds[A_nextseqnum] = false;
+  /* packet not acknowledged yet */
+  A_ackeds[A_nextseqnum] = false;
 
 
-    // send packet to simulator
-    if (TRACE > 0) {
-      printf("----A: sending packet %d to layer 3\n", p.seqnum);
-    }
-    tolayer3(A, p);
+  /* send packet to simulator */
+  if (TRACE > 0) {
+    printf("----A: sending packet %d to layer 3\n", p.seqnum);
+  }
+  tolayer3(A, p);
 
-    // set a simulated countdown timer for this packet.
-    // since the emulator allows only one hardware timer, we simulate per-packet timers
-    // by tracking how much time remains for each packet, and checking it in A_timerinterrupt().
-    A_expiries[A_nextseqnum] = RTT;
+  /* set a simulated countdown timer for this packet.
+  since the emulator allows only one hardware timer, we simulate per-packet timers
+  by tracking how much time remains for each packet, and checking it in A_timerinterrupt(). */
+  A_expiries[A_nextseqnum] = RTT;
 
-    // if this is the first packet, start the tick timer.
-    if (!A_timer_is_active) {
-      starttimer(A, 1.0);
-      A_timer_is_active = true;
-    }
+  /* if this is the first packet, start the tick timer. */
+  if (!A_timer_is_active) {
+    starttimer(A, 1.0);
+    A_timer_is_active = true;
+  }
 
-    // get next sequence number, wrap back to 0
-    A_nextseqnum = (A_nextseqnum + 1) % SEQSPACE;
+  /* get next sequence number, wrap back to 0 */
+  A_nextseqnum = (A_nextseqnum + 1) % SEQSPACE;
 }
 
 
@@ -110,61 +111,64 @@ void A_output(struct msg message)
 */
 void A_input(struct pkt packet)
 {
-  // check if packet is corrupted
+  int i;
+  int acknum;
+  bool has_unacked;
+  /* check if packet is corrupted */
   if (IsCorrupted(packet)) {
     if (TRACE > 0)
-        printf("----A: Corrupted ACK %d received, ignored\n", packet.acknum);
+      printf("----A: Corrupted ACK %d received, ignored\n", packet.acknum);
     return;
   }
 
   total_ACKs_received++;
-  int acknum = packet.acknum;
+  acknum = packet.acknum;
 
-  // we need to only handle the ACKs for packets that are currently in the sender's window 
-  // if packet is already acknowledge, then is a duplicate ACK
+  /* we need to only handle the ACKs for packets that are currently in the sender's window 
+  if packet is already acknowledge, then is a duplicate ACK */
   if (!A_ackeds[acknum]) {
-      A_ackeds[acknum] = true;
-      A_expiries[acknum] = -1.0; // Stop simulated timer for this packet
-      new_ACKs++;
+    A_ackeds[acknum] = true;
+    A_expiries[acknum] = -1.0; /* Stop simulated timer for this packet */
+    new_ACKs++;
 
-      if (TRACE > 0)
-          printf("----A: ACK %d received and marked as acknowledged\n", acknum);
+    if (TRACE > 0)
+      printf("----A: ACK %d received and marked as acknowledged\n", acknum);
   } else {
-      if (TRACE > 0)
-          printf("----A: Duplicate ACK %d received, ignored\n", acknum);
+    if (TRACE > 0)
+      printf("----A: Duplicate ACK %d received, ignored\n", acknum);
       return;
   }
 
-  // in selective repeat, the sender window base moves forward only if the base packet (A_base) has been acknowledged
-  // because the window is circular (going back to 0), we must use modulo to handle then wrap cleanly
-  // we continue sliding the base forward until we find the first unACKed packet
+  /* in selective repeat, the sender window base moves forward only if the base packet (A_base) has been acknowledged
+  because the window is circular (going back to 0), we must use modulo to handle then wrap cleanly
+  we continue sliding the base forward until we find the first unACKed packet */
   while (A_ackeds[A_base]) {
-      A_ackeds[A_base] = false;          // reset slot for reuse
-      A_expiries[A_base] = -1.0;         // cancel timer
-      A_base = (A_base + 1) % SEQSPACE;  // slide the base forward, the modulo ensures that it wraps back to 0
+      A_ackeds[A_base] = false;          /* reset slot for reuse */
+      A_expiries[A_base] = -1.0;         /* cancel timer */
+      A_base = (A_base + 1) % SEQSPACE;  /* slide the base forward, the modulo ensures that it wraps back to 0 */
   }
 
-  // the emulator only allows ONE real timer, so we simulate per-packet timers with a 1-second global tick
-  // if any unACKed packets remain in the window, we keep the timer running. if all are ACKed, we can stop it.
-  bool has_unacked = false;
-  // check if there is a packet with active timers
-  for (int i = 0; i < WINDOWSIZE; i++) {
-      int index = (A_base + i) % SEQSPACE;
+  /* the emulator only allows ONE real timer, so we simulate per-packet timers with a 1-second global tick
+  if any unACKed packets remain in the window, we keep the timer running. if all are ACKed, we can stop it. */
+  has_unacked = false;
+  /* check if there is a packet with active timers */
+  for (i = 0; i < WINDOWSIZE; i++) {
+    int index = (A_base + i) % SEQSPACE;
 
-      if (A_expiries[index] > 0) {
-          has_unacked = true;
-          break;
-      }
+    if (A_expiries[index] > 0) {
+      has_unacked = true;
+      break;
+    }
   }
 
-  // start timer if there are unACKed packets and timer is not active
+  /* start timer if there are unACKed packets and timer is not active */
   if (has_unacked && !A_timer_is_active) {
-      starttimer(A, 1.0);
-      A_timer_is_active = true;
+    starttimer(A, 1.0);
+    A_timer_is_active = true;
   } else if (!has_unacked) {
-      // stop timer if all packets are ACKed
-      stoptimer(A);
-      A_timer_is_active = false;
+    /* stop timer if all packets are ACKed */
+    stoptimer(A);
+    A_timer_is_active = false;
   }
 }
 
@@ -174,32 +178,32 @@ void A_timerinterrupt(void)
   if (TRACE > 0)
     printf("----A: Timer tick, checking for expired packets...\n");
 
-  
+  int i; 
   bool any_unacked = false;
 
-  for (int i = 0; i < WINDOWSIZE; i++) {
-    // calculate index
+  for (i = 0; i < WINDOWSIZE; i++) {
+    /* calculate index */
     int index = (A_base + i) % SEQSPACE;
 
-    // only process packets that are not acknowledged and have an active timer
+    /* only process packets that are not acknowledged and have an active timer */
     if (!A_ackeds[index] && A_expiries[index] > 0) {
-      A_expiries[index] -= 1.0;  // tick down
+      A_expiries[index] -= 1.0;  /* tick down */
 
-      // if timer expired, retransmit
+      /* if timer expired, retransmit */
       if (A_expiries[index] <= 0) {
         if (TRACE > 0)
-            printf("----A: Timeout for packet %d, retransmitting\n", index);
+          printf("----A: Timeout for packet %d, retransmitting\n", index);
 
-        tolayer3(A, A_buffer[index]);   // retransmit the packet
-        packets_resent++;               // update global counter for retransmitted packets
-        A_expiries[index] = RTT;    // restart timer
+        tolayer3(A, A_buffer[index]);   /* retransmit the packet */
+        packets_resent++;               /* update global counter for retransmitted packets */
+        A_expiries[index] = RTT;    /* restart timer */
       }
 
       any_unacked = true;
     }
   }
 
-  // after checking all the packets, if any are unacknowledged, keep the timer running, else stop it
+  /* after checking all the packets, if any are unacknowledged, keep the timer running, else stop it */
   if (any_unacked) {
     starttimer(A, 1.0);
     A_timer_is_active = true;
@@ -212,18 +216,19 @@ void A_timerinterrupt(void)
 
 void A_init(void)
 {
-  // initialize sender's window base (first unacked packet)
+  int i;
+  /* initialize sender's window base (first unacked packet) */
   A_base = 0;
 
-  // initialize sender's next sequence number to be used
+  /* initialize sender's next sequence number to be used */
   A_nextseqnum = 0;
 
-  // initialize timer state
+  /* initialize timer state */
   A_timer_is_active = false;
 
-  for (int i = 0; i < SEQSPACE; i++) {
-    A_ackeds[i] = false; // initialize acked state for all packets (no packets have been acked)
-    A_expiries[i] = -1; // initialize expiry times for all packets (-1 indicating is inactive)
+  for (i = 0; i < SEQSPACE; i++) {
+    A_ackeds[i] = false; /* initialize acked state for all packets (no packets have been acked) */
+    A_expiries[i] = -1; /* initialize expiry times for all packets (-1 indicating is inactive) */
   }
 
   if (TRACE > 0) {
