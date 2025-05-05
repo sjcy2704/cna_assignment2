@@ -211,29 +211,30 @@ void B_input(struct pkt packet)
   int seq = packet.seqnum;
 
   /* if packet is corrupted we just ignore it and do nothing else */
-  if (!IsCorrupted(packet)) {
-    packets_received++; /* update global counter for received packets */
-
-    if (TRACE > 0) printf("----B: packet %d is correctly received, send ACK!\n", seq);
-
-    /* save the packet in the buffer even if it hasn't been recieved even if its out of order since SR allows that */
-    if (!B_received[seq]) {
-      B_buffer[seq] = packet;
-      B_received[seq] = true;
-    }
-
-    /* attempt to deliver packets to layer 5 in order */
-    /* while having the expected packet, it gets delivered and move the base forward */
-    while (B_received[B_expected_base]) {
-      tolayer5(B, B_buffer[B_expected_base].payload); /* deliver the packet to layer 5 in order */
-      B_received[B_expected_base] = false; /* reset the received flag */
-      B_expected_base = (B_expected_base + 1) % SEQSPACE; /* move the base forward */
-    }
+  if (IsCorrupted(packet)) {
+    return;
   }
 
-  /* although there's nothing performed on corrupted packets, we still send an ACK as SR requires it */
-  sendpkt.seqnum = B_nextseqnum++; /* ACK packets have unique seq number*/
-  sendpkt.acknum = seq; /* ACK the sequence number of the packet even if its corrupted */
+  packets_received++; /* update global counter for received packets */
+
+  if (TRACE > 0) printf("----B: packet %d is correctly received, send ACK!\n", seq);
+
+  /* save the packet in the buffer even if it hasn't been recieved even if its out of order since SR allows that */
+  if (!B_received[seq]) {
+    B_buffer[seq] = packet;
+    B_received[seq] = true;
+  }
+
+  /* attempt to deliver packets to layer 5 in order */
+  /* while having the expected packet, it gets delivered and move the base forward */
+  while (B_received[B_expected_base]) {
+    tolayer5(B, B_buffer[B_expected_base].payload); /* deliver the packet to layer 5 in order */
+    B_received[B_expected_base] = false; /* reset the received flag */
+    B_expected_base = (B_expected_base + 1) % SEQSPACE; /* move the base forward */
+  }
+
+  sendpkt.seqnum = 0; /* sender does not use seqnum*/
+  sendpkt.acknum = seq; /* ACK the sequence number of the packet */
   for (i = 0; i < 20; i++) sendpkt.payload[i] = 0; /* payload is not used so just set to zeros */
   sendpkt.checksum = ComputeChecksum(sendpkt);
   tolayer3(B, sendpkt);
