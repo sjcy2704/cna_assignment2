@@ -212,6 +212,8 @@ void B_input(struct pkt packet)
 
   /* if packet is corrupted we just ignore it and do nothing else */
   if (!IsCorrupted(packet)) {
+    packets_received++; /* update global counter for received packets */
+
     if (TRACE > 0) printf("----B: packet %d is correctly received, send ACK!\n", seq);
 
     /* save the packet in the buffer even if it hasn't been recieved even if its out of order since SR allows that */
@@ -224,7 +226,6 @@ void B_input(struct pkt packet)
     /* while having the expected packet, it gets delivered and move the base forward */
     while (B_received[B_expected_base]) {
       tolayer5(B, B_buffer[B_expected_base].payload); /* deliver the packet to layer 5 in order */
-      packets_received++; /* update global counter for received packets */
       B_received[B_expected_base] = false; /* reset the received flag */
       B_expected_base = (B_expected_base + 1) % SEQSPACE; /* move the base forward */
     }
