@@ -40,11 +40,10 @@ bool IsCorrupted(struct pkt packet)
 
 static struct pkt A_buffer[SEQSPACE];  /* array for storing packets waiting for ACK */
 static bool A_ackeds[SEQSPACE];        /* array for storing whether a packet has been ACKed */
-static float A_expiries[SEQSPACE];     /* array for storing the expiry time of each packet */
-static bool A_timer_is_active = false;  /* flag for whether the timer is active */
 
 static int A_nextseqnum = 0;           /* the next sequence number to be used by the sender */
 static int A_base = 0;                 /* the base of the window */
+static int unacked_packets = 0;
 
 /* called from layer 5 (application layer), passed the message to be sent to other side */
 void A_output(struct msg message)
@@ -73,7 +72,7 @@ void A_output(struct msg message)
   }
 
   if (TRACE > 1) {
-    printf("----A: New message arrives, send window is not full, send new message to layer 3!\n");
+    printf("----A: New message arrives, send window is not full, send new messge to layer 3!\n");
   }
 
   /* construct packet to send */
@@ -99,19 +98,14 @@ void A_output(struct msg message)
   }
   tolayer3(A, p);
 
-  /* set a simulated countdown timer for this packet.
-  since the emulator allows only one hardware timer, we simulate per-packet timers
-  by tracking how much time remains for each packet, and checking it in A_timerinterrupt(). */
-  A_expiries[A_nextseqnum] = RTT;
-
   /* if this is the first packet, start the tick timer. */
-  if (!A_timer_is_active) {
-    starttimer(A, 1.0);
-    A_timer_is_active = true;
+  if (A_base == A_nextseqnum) {
+    starttimer(A, RTT);
   }
 
   /* get next sequence number, wrap back to 0 */
   A_nextseqnum = (A_nextseqnum + 1) % SEQSPACE;
+  unacked_packets++;
 }
 
 
@@ -120,9 +114,7 @@ void A_output(struct msg message)
 */
 void A_input(struct pkt packet)
 {
-  int i;
   int acknum;
-  bool has_unacked;
   /* check if packet is corrupted */
   if (IsCorrupted(packet)) {
     if (TRACE > 0)
@@ -132,6 +124,7 @@ void A_input(struct pkt packet)
 
   acknum = packet.acknum;
 
+  /* check if the ACK is out of range */
   if (acknum < 0 || acknum >= SEQSPACE) {
     if (TRACE == 0)
       printf("----A: ACK %d is out of range, do nothing!\n", acknum);
@@ -148,8 +141,8 @@ void A_input(struct pkt packet)
   if packet is already acknowledge, then is a duplicate ACK */
   if (!A_ackeds[acknum]) {
     A_ackeds[acknum] = true;
-    A_expiries[acknum] = -1.0; /* Stop simulated timer for this packet */
     new_ACKs++;
+    unacked_packets--;
 
     if (TRACE > 0) {
       printf("----A: ACK %d is not a duplicate\n", acknum);
@@ -158,7 +151,6 @@ void A_input(struct pkt packet)
     if (TRACE > 0) {
       printf("----A: duplicate ACK received, do nothing!\n");
     }
-    return;
   }
 
   /* in selective repeat, the sender window base moves forward only if the base packet (A_base) has been acknowledged
@@ -166,75 +158,25 @@ void A_input(struct pkt packet)
   we continue sliding the base forward until we find the first unACKed packet */
   while (A_ackeds[A_base]) {
       A_ackeds[A_base] = false;          /* reset slot for reuse */
-      A_expiries[A_base] = -1.0;         /* cancel timer */
       A_base = (A_base + 1) % SEQSPACE;  /* slide the base forward, the modulo ensures that it wraps back to 0 */
   }
 
-  /* the emulator only allows ONE real timer, so we simulate per-packet timers with a 1-second global tick
-  if any unACKed packets remain in the window, we keep the timer running. if all are ACKed, we can stop it. */
-  has_unacked = false;
-  /* check if there is a packet with active timers */
-  for (i = 0; i < WINDOWSIZE; i++) {
-    int index = (A_base + i) % SEQSPACE;
-
-    if (A_expiries[index] > 0) {
-      has_unacked = true;
-      break;
-    }
-  }
-
-  /* start timer if there are unACKed packets and timer is not active */
-  if (has_unacked && !A_timer_is_active) {
-    starttimer(A, 1.0);
-    A_timer_is_active = true;
-  } else if (!has_unacked) {
-    /* stop timer if all packets are ACKed */
-    stoptimer(A);
-    A_timer_is_active = false;
+  stoptimer(A);
+  if (unacked_packets > 0) {
+    starttimer(A, RTT);
   }
 }
 
-/* called when A's timer goes off */
 void A_timerinterrupt(void)
 {
-  int i; 
-  bool any_unacked;
-
-  if (TRACE > 0)
+  if (TRACE > 0) {
     printf("----A: time out,resend packets!\n");
-
-  any_unacked = false;
-  for (i = 0; i < WINDOWSIZE; i++) {
-    /* calculate index */
-    int index = (A_base + i) % SEQSPACE;
-
-    /* only process packets that are not acknowledged and have an active timer */
-    if (!A_ackeds[index] && A_expiries[index] > 0) {
-      A_expiries[index] -= 1.0;  /* tick down */
-
-      /* if timer expired, retransmit */
-      if (A_expiries[index] <= 0) {
-        if (TRACE > 0)
-          printf("----A: resending packet %d\n", index);
-
-        tolayer3(A, A_buffer[index]);   /* retransmit the packet */
-        packets_resent++;               /* update global counter for retransmitted packets */
-        A_expiries[index] = RTT;    /* restart timer */
-      }
-
-      any_unacked = true;
-    }
   }
 
-  /* after checking all the packets, if any are unacknowledged, keep the timer running, else stop it */
-  if (any_unacked) {
-    starttimer(A, 1.0);
-    A_timer_is_active = true;
-  } else {
-    stoptimer(A);
-    A_timer_is_active = false;
-  }
+  tolayer3(A, A_buffer[A_base]); /* resend the packet */
+  packets_resent++; /* update global counter for resent packets */
 
+  starttimer(A, RTT); /* restart the timer */
 }
 
 void A_init(void)
@@ -246,12 +188,10 @@ void A_init(void)
   /* initialize sender's next sequence number to be used */
   A_nextseqnum = 0;
 
-  /* initialize timer state */
-  A_timer_is_active = false;
+  unacked_packets = 0;
 
   for (i = 0; i < SEQSPACE; i++) {
     A_ackeds[i] = false; /* initialize acked state for all packets (no packets have been acked) */
-    A_expiries[i] = -1; /* initialize expiry times for all packets (-1 indicating is inactive) */
   }
 }
 
